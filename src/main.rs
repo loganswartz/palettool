@@ -1,120 +1,62 @@
-use std::{env, error::Error, fmt::Display, str::FromStr};
-use colored::Colorize;
-use image::{DynamicImage, GenericImageView, ImageReader, Pixel};
-use oklab::{oklab_to_srgb, srgb_to_oklab, Oklab};
+use std::{error::Error, str::FromStr, thread};
+use clap::Parser;
+use color::{get_averages_for_regions_in, to_hex};
+use region::Region;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
+mod region;
+mod color;
 
-    let Some(file) = args.get(1) else {
-        return Err("Please specify a file.".into());
-    };
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Args {
+    files: Vec<String>,
 
-    if args.len() < 2 {
-        return Err("You must specify a range".into());
-    };
+    #[arg(short, long)]
+    region: Vec<String>,
 
-    let image = ImageReader::open(file)?.decode()?;
-    for range in &args[2..] {
-        let rect = Rect::from_str(range)?;
-        let averaged = get_average_of_rect_in(&image, &rect);
-
-        println!("{}", averaged.to_string().on_truecolor(averaged.r, averaged.g, averaged.b));
-    }
-
-    Ok(())
+    #[arg(short, long)]
+    csv: bool,
 }
 
-fn get_average_of_rect_in(image: &DynamicImage, rect: &Rect) -> oklab::Rgb<u8> {
-    let start = &rect.start;
-    let end = &rect.end;
+fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
 
-    let x_dim = end.x - start.x + 1;
-    let y_dim = end.y - start.y + 1;
-    let count = (x_dim * y_dim) as f32;
+    eprintln!("Parsing {} files...", args.files.len());
+    let regions = args.region.iter().map(|reg| Region::from_str(reg)).collect::<Result<Vec<Region>, _>>()?;
 
-    // let mut pixels: Vec<Oklab> = Vec::with_capacity(total_count.try_into().unwrap());
-    let mut l_total = 0.0;
-    let mut a_total = 0.0;
-    let mut b_total = 0.0;
+    let mut threads = vec![];
+    for file in args.files {
+        let regions = regions.clone();
+        threads.push(thread::spawn(move || {
+            get_averages_for_regions_in(file, &regions)
+        }))
+    }
 
-    for x in start.x..=end.x {
-        for y in start.y..=end.y {
-            let pixel = image.get_pixel(x, y).to_rgb();
-            let oklab = srgb_to_oklab(oklab::Rgb { r: pixel.0[0], g: pixel.0[1], b: pixel.0[2]});
+    let results  = threads.into_iter().map(|c| c.join().unwrap()).collect::<Result<Vec<_>, _>>()?;
 
-            l_total += oklab.l;
-            a_total += oklab.a;
-            b_total += oklab.b;
+    if args.csv {
+        let mut index = 1;
+        let labels: Vec<String> = regions.iter().map(|rect| rect.label.clone().unwrap_or_else(|| {
+            let generated = format!("Unlabelled {}", index);
+            index += 1;
 
-            // pixels.push(oklab);
-            // println!("{}", pixel.0.map(|v| v.to_string()).join(","));
-            // println!("{},{},{}", oklab.l, oklab.a, oklab.b);
+            generated
+        })).collect();
+
+        println!("{}", labels.join(","));
+    }
+
+    for (_, triplets) in results {
+        // eprintln!("Palette for {}:", filename);
+
+        let separator = if args.csv { "," } else { "\n" };
+        println!("{}", triplets.iter().map(to_hex).collect::<Vec<String>>().join(separator));
+
+        // insert a blank line
+        if !args.csv {
+            println!();
         }
     }
 
-    oklab_to_srgb(Oklab {
-        l: l_total / count,
-        a: a_total / count,
-        b: b_total / count,
-    })
-}
-
-#[derive(Debug)]
-struct Rect {
-    start: Point,
-    end: Point,
-}
-
-impl FromStr for Rect {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (first, second) = s.split_once("-").ok_or("Not a valid range.")?;
-        let start = Point::from_str(first)?;
-        let end = Point::from_str(second)?;
-
-        Ok(Rect {
-            start,
-            end,
-        })
-    }
-}
-
-impl Display for Rect {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-{}", self.start, self.end)
-    }
-}
-
-#[derive(Debug)]
-struct Point {
-    x: u32,
-    y: u32,
-}
-
-impl FromStr for Point {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (first, second) = s.split_once(",").ok_or("Not a valid range.")?;
-
-        let Ok(x) = first.trim().parse() else {
-            return Err("The x component couldn't be parsed.".to_string());
-        };
-        let Ok(y) = second.trim().parse() else {
-            return Err("The y component couldn't be parsed.".to_string());
-        };
-
-        Ok(Point {
-            x,
-            y,
-        })
-    }
-}
-
-impl Display for Point {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{},{}", self.x, self.y)
-    }
+    Ok(())
 }
