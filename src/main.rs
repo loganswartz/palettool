@@ -6,14 +6,17 @@ use region::Region;
 mod region;
 mod color;
 
+/// A tool for creating palettes, based off of the averaged colors of regions from a set of images.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    files: Vec<String>,
+    file: Vec<String>,
 
+    /// A pixel region to capture from each input file.
     #[arg(short, long)]
     region: Vec<String>,
 
+    /// Dump the output to stdout as a CSV.
     #[arg(short, long)]
     csv: bool,
 }
@@ -21,11 +24,15 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    eprintln!("Parsing {} files...", args.files.len());
+    eprintln!("Parsing {} files...", args.file.len());
     let regions = args.region.iter().map(|reg| Region::from_str(reg)).collect::<Result<Vec<Region>, _>>()?;
 
+    if regions.is_empty() {
+        return Err("You must specify at least one region!".into());
+    }
+
     let mut threads = vec![];
-    for file in args.files {
+    for file in args.file {
         let regions = regions.clone();
         threads.push(thread::spawn(move || {
             get_averages_for_regions_in(file, &regions)
